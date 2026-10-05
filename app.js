@@ -2,18 +2,10 @@
  * Everything is saved on the phone first (IndexedDB) and sent to the Realynx Apps Script when there is signal.
  * No build step: plain JavaScript, one file. */
 'use strict';
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const APP = document.getElementById('app');
 
 // ============================================================ constants
-const TYPES = [
-  ['intake', '初訪 intake', '第一次見面：了解工廠、機器、主要問題及關鍵專家。First meeting: the factory, machines, main problems, key expert.'],
-  ['elicitation', '深入訪談 elicitation', '就主題深入問師傅：原因、檢查次序、例外。Main interview: causes, checks, exceptions.'],
-  ['scenario', '情境 scenario', '給師傅一個真實或假設問題，請他一步步講點處理。Give a real or made-up problem; the expert talks it through.'],
-  ['field_observation', '現場觀察 observation', '在機邊看師傅做，即場問短問題。Watch at the press and ask short questions.'],
-  ['review', '審閱 review', '師傅逐張確認知識卡。The expert checks the draft rule cards.'],
-  ['follow_up', '追問 follow-up', '補問 GAPS 及未清楚的地方。Fill gaps and unclear points.']
-];
 const LANGS = [['yue', '粵語'], ['cmn', '普通話'], ['mixed', '混合']];
 const REMARKS = [
   ['case', '突發問題', 'Sudden problem on the press'], ['demo', '師傅示範', 'Expert demonstrates'],
@@ -275,13 +267,12 @@ function vHome() {
     const x = expert(s.expertKey), n = s.items.filter((i) => !i.deleted && i.kind !== 'switch').length;
     const status = s.cancelled ? '已取消' : s.remote ? '來自 Sheet' : s.finished ? '已完成' : s.timer && s.timer.acc + (s.timer.running ? 1 : 0) > 0 ? '進行中' : (s.date === td ? '今日' : s.date);
     const pill = s.cancelled ? 'background:#ebe6dc;color:#7b8591' : s.finished ? 'background:#e3f1ea;color:#235a42' : status === '進行中' ? 'background:#fdf3e2;color:#7a4608' : 'background:#ebe6dc;color:#4a5563';
-    const t = TYPES.find((y) => y[0] === s.type);
     return `<div class="card" style="display:flex;align-items:stretch;overflow:hidden">
       <button data-a="openSession" data-v="${h(s.key)}" style="flex:1;display:flex;align-items:center;gap:12px;padding:14px 8px 14px 14px;border:0;background:transparent;text-align:left;min-width:0">
         <div style="width:44px;height:44px;border-radius:22px;background:#e8eef6;color:#1f3a5f;font-weight:700;display:flex;align-items:center;justify-content:center;font-size:17px;flex-shrink:0">${h((x ? x.short : '?').slice(0, 1))}</div>
         <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px">
           <b style="font-size:15.5px;${s.cancelled ? 'color:#9aa4b0;text-decoration:line-through' : ''}">${h(s.sid || '未上載')} · ${h(x ? x.short : '—')}</b>
-          <span style="font-size:12.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${h(s.date)} · ${h(t ? t[1].split(' ')[0] : '')} · ${n} 項${s.topics && s.topics.length ? ' · ' + h(s.topics.join('、')) : ''}</span>
+          <span style="font-size:12.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${h(s.date)} · ${n} 項${s.topics && s.topics.length ? ' · ' + h(s.topics.join('、')) : ''}</span>
         </div>
         <span style="font-size:12px;font-weight:700;padding:4px 10px;border-radius:12px;flex-shrink:0;${pill}">${h(status)}</span>
       </button>
@@ -310,7 +301,6 @@ function vNew() {
   const f = U.f, editing = !!f.editKey;
   const custs = S.cache.customers;
   const exs = allExperts().filter((x) => x.cid === f.cid);
-  const t = TYPES.find((x) => x[0] === f.type);
   const ex = expert(f.expertKey), ok = ex && hasConsent(ex.key);
   const c = customer(f.cid);
   const sugg = uniq((c && c.problems ? c.problems.filter((p) => String(p).length <= 8) : []).concat(SUGGEST, f.topics));
@@ -322,9 +312,6 @@ function vNew() {
       <div class="h">專家 Expert</div>
       <div class="chips">${exs.map((x) => `<button class="chip ${f.expertKey === x.key ? 'on' : ''}" data-a="fExpert" data-v="${h(x.key)}">${h(x.short)}${x.years ? ' ' + h(x.years) + '年' : ''}</button>`).join('')}
         <button class="chip add" data-a="openNewExpert">＋ 新專家</button></div>
-      <div class="h">類型 Type</div>
-      <div class="chips">${TYPES.map((x) => `<button class="chip ${f.type === x[0] ? 'on' : ''}" data-a="fType" data-v="${x[0]}">${x[1]}</button>`).join('')}</div>
-      <div class="help">${t ? t[2] : ''}</div>
       <div class="h">預計主題 Planned topics <span style="font-weight:400;color:var(--muted)">— 可多選，訪談中可隨時加</span></div>
       <div class="chips">${sugg.map((x) => `<button class="chip ${f.topics.indexOf(x) >= 0 ? 'on' : ''}" data-a="fTopic" data-v="${h(x)}">${h(x)}</button>`).join('')}
         <button class="chip add" data-a="openNewTopic">＋ 新主題</button></div>
@@ -399,7 +386,7 @@ function itemState(s, it) {
   return (s.syncedAt || 0) >= (it.changedAt || it.at) ? '已上載' : '等候上載';
 }
 function vSession() {
-  const s = sess(), x = expert(s.expertKey), t = TYPES.find((y) => y[0] === s.type), lang = LANGS.find((y) => y[0] === s.lang);
+  const s = sess(), x = expert(s.expertKey), lang = LANGS.find((y) => y[0] === s.lang);
   const items = liveItems(s);
   const shown = items.filter((i) => s.filter === 'all' || !s.filter || i.topic === (s.filter === 'current' ? s.current : s.filter));
   const miss = s.current ? missingOf(s, s.current).length : 0;
@@ -408,10 +395,10 @@ function vSession() {
     <div class="shead">
       <div class="row" style="gap:4px"><button class="ib" data-a="go" data-v="home" aria-label="Home">${I.back('#ffffff')}</button>
         <div style="flex:1;display:flex;flex-direction:column;min-width:0"><b style="font-size:17px">${h(s.sid || '新訪談')} · ${h(x ? x.short : '')}</b>
-        <span style="font-size:12px;opacity:.8">${h(t ? t[1] : '')} · ${h(lang ? lang[1] : '')}</span></div></div>
+        <span style="font-size:12px;opacity:.8">${h(lang ? lang[1] : '')}${s.location ? ' · ' + h(s.location) : ''}</span></div></div>
       <div class="row" style="gap:10px;padding:0 6px">
-        <button class="timer" data-a="toggleTimer"><span class="dot ${s.timer.running ? 'rec' : ''}"></span>
-          <span style="display:flex;flex-direction:column"><span class="c" data-clock>${fmt(secsOf(s))}</span><span class="hint">${s.timer.running ? '計時中 · 與語音備忘錄同步' : '按此開始（與語音備忘錄同時）'}</span></span></button>
+        <div class="timer"><span class="dot ${s.timer.running ? 'rec' : ''}"></span>
+          <span style="display:flex;flex-direction:column"><span class="c" data-clock>${fmt(secsOf(s))}</span><span class="hint">${s.timer.running ? '已進行 Elapsed' : '未開始 Not started'}</span></span></div>
         <button class="markb" data-a="mark">${I.pin}標記 Mark</button>
       </div>
     </div>
@@ -617,7 +604,8 @@ function vSheet() {
         `<button data-a="pickMemo" style="min-height:72px;border-radius:14px;border:1px solid #1f3a5f;background:#fff;text-align:left;padding:12px 14px;display:flex;flex-direction:column;gap:2px"><b style="font-size:16px;color:#1f3a5f">加入「語音備忘錄」錄音 Add Voice Memos file</b>
           <span style="font-size:12px;color:var(--muted)">先喺語音備忘錄按 ⋯ › 儲存到「檔案」，再喺呢度揀。大檔案會分段上載。</span></button>
         <div class="card" style="padding:14px;display:flex;flex-direction:column;gap:10px;align-items:stretch">
-          <b>短語音筆記 Short voice note <span style="font-weight:400;color:var(--muted);font-size:12px">（最長 5 分鐘）</span></b>
+          <b>App 內錄音 Record in the app <span style="font-weight:400;color:var(--muted);font-size:12px">（最長 60 分鐘 · 約 15 MB／小時）</span></b>
+          <span style="font-size:12px;color:var(--muted)">每 30 秒自動保存；上載後自動從手機刪除。錄音時保持 App 開住、唔好鎖機。長訪談用語音備忘錄最穩陣。</span>
           <button class="rec-btn ${r ? 'on' : ''}" data-a="recNote">${r ? '停止 Stop<br><span data-recclock style="font-size:14px">' + fmt((Date.now() - r.start) / 1000) + '</span>' : '錄音 Record'}</button>
         </div>` + cancel;
     }
@@ -742,7 +730,7 @@ function createSession(f) {
 }
 function add(o, msg, silent) {
   const s = sess(), now = o.at || Date.now(), secs = secsOf(s);
-  const it = Object.assign({ uid: uid(), at: now, date: iso(now), topic: s.current || '', rec: secs > 0 ? '錄音 ' + fmt(secs) : '', secs: Math.floor(secs) }, o);
+  const it = Object.assign({ uid: uid(), at: now, date: iso(now), topic: s.current || '', rec: secs > 0 ? '約 ' + fmt(secs) : '', secs: Math.floor(secs) }, o);
   s.items.unshift(it);
   U.sheet = null;
   touch(s);
@@ -754,11 +742,11 @@ function setCov(s, t, area, on) { s.cov = s.cov || {}; s.cov[t] = Object.assign(
 function switchTopic(t, silent) {
   const s = sess(); if (!t || t === s.current) return;
   const now = Date.now(), secs = secsOf(s);
-  s.items.unshift({ uid: uid(), kind: 'switch', tag: '轉', title: '轉話題 → ' + t, text: s.current ? '由「' + s.current + '」轉到「' + t + '」' : '', topic: t, at: now, date: iso(now), rec: secs > 0 ? '錄音 ' + fmt(secs) : '', secs: Math.floor(secs) });
+  s.items.unshift({ uid: uid(), kind: 'switch', tag: '轉', title: '轉話題 → ' + t, text: s.current ? '由「' + s.current + '」轉到「' + t + '」' : '', topic: t, at: now, date: iso(now), rec: secs > 0 ? '約 ' + fmt(secs) : '', secs: Math.floor(secs) });
   s.current = t; touch(s);
   if (!silent) toast('而家講緊：' + t);
 }
-function startTimer(s) { if (!s.timer.running) { s.timer.running = true; s.timer.startedAt = Date.now(); if (!s.timer.firstStart) s.timer.firstStart = iso(Date.now()); } }
+function startTimer(s) { if (!s.timer.running) { s.timer.running = true; s.timer.startedAt = Date.now(); if (!s.timer.firstStart) { s.timer.firstStart = iso(Date.now()); s.timer.firstStartMs = Date.now(); } } }
 function stopTimer(s) { if (s.timer.running) { s.timer.acc += (Date.now() - s.timer.startedAt) / 1000; s.timer.running = false; } }
 let qT = null;
 function flashQuiet(w, msg) { U.quietHit = w; U.quietMsg = msg; render(); clearTimeout(qT); qT = setTimeout(() => { U.quietHit = ''; U.quietMsg = ''; render(); }, 1400); }
@@ -775,6 +763,25 @@ async function shrink(file, max = 2000, q = 0.85) {
 }
 let fileTarget = null;
 function pick(input, target) { fileTarget = target; const el = document.getElementById(input); el.value = ''; el.click(); }
+
+async function finishRecording(recovered) {
+  const ra = S.recActive; if (!ra) return;
+  const parts = [];
+  for (let i = 0; i < ra.n; i++) { const b = await getBlob('rp:' + ra.id + ':' + i); if (b) parts.push(b); }
+  S.recActive = null;
+  const s = S.sessions[ra.sessKey];
+  if (parts.length && s) {
+    const blob = new Blob(parts, { type: ra.mime }), key = 'au:' + ra.id, secs = (recovered ? 30 * parts.length : (Date.now() - ra.start) / 1000);
+    await putBlob(key, blob);
+    const sec0 = s.timer && s.timer.firstStartMs ? (ra.start - s.timer.firstStartMs) / 1000 : 0;
+    s.items.unshift({ uid: uid(), kind: 'audio', sub: 'note', tag: 'AU', title: recovered ? '語音筆記（中斷後救回）' : '語音筆記 Voice note',
+      text: (recovered ? '約 ' : '') + fmt(secs).replace(/^00:/, '') + ' · ' + mb(blob.size), blobKey: key, blobDone: false, size: blob.size, mime: blob.type,
+      ext: /webm/.test(blob.type) ? 'webm' : 'm4a', at: ra.start, date: iso(ra.start), topic: s.current || '', rec: sec0 > 0 ? '約 ' + fmt(sec0) : '' });
+    touch(s); toast(recovered ? '已救回上次未完成的錄音' : '錄音已儲存 Saved');
+  }
+  for (let i = 0; i < ra.n; i++) DB.del('blobs', 'rp:' + ra.id + ':' + i).catch(() => {});
+  save(true);
+}
 
 const A = {
   go(v) { S.ui.screen = v; U.sheet = null; U.confirm = false; save(); render(); },
@@ -837,7 +844,6 @@ const A = {
   // new session form
   fCust(v) { U.f.cid = v; const exs = allExperts().filter((x) => x.cid === v); U.f.expertKey = exs[0] ? exs[0].key : ''; render(); },
   fExpert(v) { U.f.expertKey = v; render(); },
-  fType(v) { U.f.type = v; render(); },
   fLang(v) { U.f.lang = v; render(); },
   fTopic(v) { const t = U.f.topics, i = t.indexOf(v); if (i >= 0) t.splice(i, 1); else t.push(v); render(); },
   openNewExpert() { if (!U.f.cid) return toast('請先揀客戶 Pick a customer'); Object.assign(U.f, { nxName: '', nxShort: '', nxRole: '', nxYears: '', nxPhone: '' }); U.sheet = 'newExpert'; render(); },
@@ -895,7 +901,6 @@ const A = {
   pfSkip() { const s = sess(); startTimer(s); S.ui.screen = 'session'; add({ kind: 'todo', tag: 'TD', title: '待辦', text: '開始前檢查已跳過 Pre-flight skipped' }, '已跳過檢查 Skipped'); },
 
   // session
-  toggleTimer() { const s = sess(); if (s.timer.running) stopTimer(s); else startTimer(s); touch(s); render(); },
   mark() { add({ kind: 'mark', tag: 'MK', title: '標記 Mark', text: '' }, '已標記 ' + fmt(secsOf(sess()))); },
   switchTopic(v) { switchTopic(v); render(); },
   filter(v) { sess().filter = v; save(); render(); },
@@ -906,7 +911,7 @@ const A = {
     const s = sess(), at = fmt(secsOf(s));
     if (w === 'mark') add({ kind: 'mark', tag: 'MK', title: '標記 Mark', text: '靜音模式標記' }, '', true);
     if (w === 'exc') { add({ kind: 'remark', tag: 'RM', title: '重要例外', text: '靜音模式 · 之後聽錄音補充' }, '', true); if (s.current) setCov(s, s.current, 'exc', true); }
-    if (w === 'ask') add({ kind: 'gap', tag: 'Q', title: '之後追問 → GAPS', text: '靜音模式 · 錄音 ' + at + ' 附近' }, '', true);
+    if (w === 'ask') add({ kind: 'gap', tag: 'Q', title: '之後追問 → GAPS', text: '靜音模式 · 約 ' + at }, '', true);
     flashQuiet(w, { mark: '已標記', exc: '已記例外', ask: '已加追問' }[w] + ' ' + at);
   },
   quietTopic(v) { switchTopic(v, true); flashQuiet('', '轉到 ' + v); },
@@ -967,24 +972,30 @@ const A = {
     if (U.rec) { U.rec.mr.stop(); return; }
     if (!window.MediaRecorder || !navigator.mediaDevices) return toast('呢部手機唔支援網頁錄音');
     try {
+      if (navigator.storage && navigator.storage.estimate) {
+        const e = await navigator.storage.estimate();
+        if (e.quota && e.quota - e.usage < 50 * 1048576) return toast('手機空間不足，先上載及刪除舊錄音');
+      }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const type = MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : (MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '');
-      const mr = new MediaRecorder(stream, type ? { mimeType: type } : undefined), chunks = [];
-      U.rec = { mr, start: Date.now() };
-      mr.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
-      mr.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop());
-        const secs = (Date.now() - U.rec.start) / 1000; clearInterval(U.rec.iv); clearTimeout(U.rec.max); U.rec = null;
-        const blob = new Blob(chunks, { type: mr.mimeType || type || 'audio/mp4' }), key = 'au:' + uid();
-        await putBlob(key, blob);
-        add({ kind: 'audio', sub: 'note', tag: 'AU', title: '語音筆記 Voice note', text: fmt(secs).replace(/^00:/, '') + ' · ' + mb(blob.size), blobKey: key, blobDone: false, size: blob.size,
-          mime: blob.type, ext: /webm/.test(blob.type) ? 'webm' : 'm4a' }, '語音筆記已儲存');
+      const opts = { audioBitsPerSecond: 32000 }; if (type) opts.mimeType = type;
+      const mr = new MediaRecorder(stream, opts), id = uid();
+      U.rec = { mr, stream, start: Date.now(), id, chain: Promise.resolve() };
+      S.recActive = { id, sessKey: S.ui.active, start: Date.now(), mime: mr.mimeType || type || 'audio/mp4', n: 0, size: 0 }; save(true);
+      mr.ondataavailable = (e) => {
+        if (!e.data || !e.data.size) return;
+        const ra = S.recActive, n = ra.n++; ra.size += e.data.size;
+        U.rec.chain = U.rec.chain.then(() => putBlob('rp:' + id + ':' + n, e.data)).then(() => save());
       };
-      mr.start(1000);
+      mr.onstop = async () => {
+        const r = U.rec; stream.getTracks().forEach((t) => t.stop()); clearInterval(r.iv); clearTimeout(r.max);
+        await r.chain; U.rec = null; if (U.sheet === 'audio') U.sheet = null; await finishRecording(false); render();
+      };
+      mr.start(30000); // a piece every 30 s goes to storage, so a crash loses at most 30 s
       U.rec.iv = setInterval(() => { const el = APP.querySelector('[data-recclock]'); if (el && U.rec) el.textContent = fmt((Date.now() - U.rec.start) / 1000); }, 500);
-      U.rec.max = setTimeout(() => { if (U.rec) U.rec.mr.stop(); }, 5 * 60 * 1000);
+      U.rec.max = setTimeout(() => { if (U.rec) { U.rec.mr.stop(); toast('已錄滿 60 分鐘，自動停止'); } }, 60 * 60 * 1000);
       render();
-    } catch (e) { U.rec = null; toast('用唔到咪高峰：' + (e.message || e)); }
+    } catch (e) { U.rec = null; S.recActive = null; toast('用唔到咪高峰：' + (e.message || e)); }
   },
   edit(v) {
     const it = sess().items.find((i) => i.uid === v); if (!it) return;
@@ -1165,7 +1176,7 @@ async function uploadAudio(s, it) {
   let st = await api('audioStart', { session_id: s.sid, uid: it.uid, name, size: b.size, mime: it.mime || b.type || 'audio/mp4', kind: it.sub || 'note' });
   const CH = S.cache.chunk || 5 * 1024 * 1024;
   for (let guard = 0; guard < 2000; guard++) {
-    if (st.done) { it.blobDone = true; it.progress = 1; save(); renderSoon(); return; }
+    if (st.done) { it.blobDone = true; it.progress = 1; it.freed = true; await DB.del('blobs', it.blobKey).catch(() => {}); save(); renderSoon(); return; }
     if (st.offset < 0) { st = await api('audioStart', { session_id: s.sid, uid: it.uid, name, size: b.size, mime: it.mime || b.type, kind: it.sub || 'note' }); continue; }
     it.progress = st.offset / b.size; renderSoon();
     const data = await blobToB64(b.slice(st.offset, st.offset + CH));
@@ -1191,6 +1202,7 @@ setInterval(() => sync(), 60 * 1000);
   if (code && S.config && !S.config.demo && isStandalone()) history.replaceState(null, '', location.pathname);
   if (S.ui.screen === 'quiet' || S.ui.screen === 'show') S.ui.screen = 'session';
   if (!S.config && code && isStandalone()) { U.f.code = code; }
+  if (S.recActive) await finishRecording(true);
   render();
   sync();
   if ('serviceWorker' in navigator) {
