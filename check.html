@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Field Kit · 手機測試</title>
+<style>
+:root{--navy:#1f3a5f;--gold:#e7b25c;--ink:#17212e;--muted:#5d6672;--line:#e0dacd;--ok:#235a42;--okbg:#e3f1ea;--bad:#8c2f25;--badbg:#fbeceb;--warn:#7a4608;--warnbg:#fdf3e2}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:#f4f1ea;color:var(--ink);font:15px/1.45 -apple-system,"PingFang TC",sans-serif;padding:calc(env(safe-area-inset-top) + 14px) 14px calc(env(safe-area-inset-bottom) + 24px)}
+h1{font-size:21px;margin:0}.sub{color:var(--muted);font-size:13px;margin:4px 0 12px}
+.row{background:#fff;border:1px solid var(--line);border-radius:12px;padding:11px 12px;margin-bottom:8px;display:flex;gap:10px;align-items:flex-start}
+.ic{width:26px;height:26px;border-radius:13px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;background:#eceff3;color:#4a5563}
+.ok .ic{background:var(--okbg);color:var(--ok)}.bad .ic{background:var(--badbg);color:var(--bad)}.warn .ic{background:var(--warnbg);color:var(--warn)}
+.t{flex:1;min-width:0}.t b{display:block;font-size:14.5px}.t span{font-size:12.5px;color:var(--muted);overflow-wrap:anywhere}
+button{font:inherit;font-weight:700;border-radius:12px;border:0;background:var(--navy);color:#fff;padding:0 14px;height:44px}
+button.sm{height:34px;font-size:13px;padding:0 10px;flex-shrink:0}
+button.ghost{background:#fff;color:var(--navy);border:1px solid var(--navy)}
+.yn{display:flex;gap:6px;margin-top:6px}
+.big{width:100%;height:54px;font-size:17px;margin:4px 0 12px}
+.sum{background:var(--navy);color:#fff;border-radius:14px;padding:12px 14px;margin-top:12px;font-size:13px}
+.sum b{color:var(--gold)}
+input[type=file]{display:none}
+</style>
+</head>
+<body>
+<h1>Field Kit 手機測試 Phone check</h1>
+<div class="sub">測試錄影及「上載後刪除」所需功能。約 2 分鐘。完成後截圖傳給 Claude。<br>Tests what video + safe-delete need. Screenshot the result for Claude.</div>
+<button class="big" id="runAll">① 自動測試 Run automatic tests</button>
+<div id="list"></div>
+<div class="sum" id="sum">未開始 Not started</div>
+<input id="vid" type="file" accept="video/*" capture="environment">
+<input id="pho" type="file" accept="image/*" capture="environment">
+<script>
+'use strict';
+const T = [
+  ['env', '裝置 Device', 'auto'],
+  ['mode', '開啟方式 Opened as', 'auto'],
+  ['secure', 'HTTPS + Service worker', 'auto'],
+  ['quota', '可用空間 Storage for the app', 'auto'],
+  ['persist', '長期儲存 Persistent storage', 'auto'],
+  ['idb', '儲存 60 MB 檔案 Save a 60 MB file', 'auto'],
+  ['sha', '指紋 SHA-256 of 60 MB', 'auto'],
+  ['wake', '保持螢幕亮 Keep screen on', 'auto'],
+  ['api', '連線 Apps Script', 'auto'],
+  ['video', '② 錄影 5 秒 Record a 5-second video', 'tap'],
+  ['videoPhotos', '③ 相簿有冇呢段片？Is that video in Photos?', 'ask'],
+  ['photo', '④ 影一張相 Take a photo', 'tap'],
+  ['photoPhotos', '⑤ 相簿有冇呢張相？Is that photo in Photos?', 'ask'],
+  ['mic', '⑥ App 內錄音 3 秒 Record 3 s in the app', 'tap']
+];
+const R = {};
+const $ = (id) => document.getElementById(id);
+const mb = (n) => (n / 1048576).toFixed(1) + ' MB';
+function draw() {
+  $('list').innerHTML = T.map(([k, name, kind]) => {
+    const r = R[k] || {};
+    const cls = r.s === 'ok' ? 'ok' : r.s === 'bad' ? 'bad' : r.s === 'warn' ? 'warn' : '';
+    const mark = r.s === 'ok' ? '✓' : r.s === 'bad' ? '✗' : r.s === 'warn' ? '!' : r.s === 'run' ? '…' : '·';
+    let act = '';
+    if (kind === 'tap') act = `<button class="sm" data-tap="${k}">${r.s ? '再試' : '開始'}</button>`;
+    let yn = '';
+    if (kind === 'ask') yn = `<div class="yn"><button class="sm ghost" data-ans="${k}:no">冇 No</button><button class="sm ghost" data-ans="${k}:yes">有 Yes</button></div>`;
+    return `<div class="row ${cls}"><div class="ic">${mark}</div><div class="t"><b>${name}</b><span>${r.m || (kind === 'ask' ? '開「相片」App 最新一格睇下 · Check the newest item in the Photos app' : kind === 'tap' ? '按「開始」' : '')}</span>${yn}</div>${act}</div>`;
+  }).join('');
+  const done = T.filter(([k]) => R[k] && R[k].s && R[k].s !== 'run');
+  const bad = done.filter(([k]) => R[k].s === 'bad').length;
+  $('sum').innerHTML = `完成 <b>${done.length} / ${T.length}</b> · 問題 <b>${bad}</b><br>${navigator.userAgent.replace(/^Mozilla\/5\.0 /, '').slice(0, 140)}<br>${new Date().toLocaleString('zh-HK')}`;
+}
+const set = (k, s, m) => { R[k] = { s, m }; draw(); };
+const ms = (t0) => Math.round(performance.now() - t0) + ' ms';
+function ios() { const m = navigator.userAgent.match(/OS (\d+)_(\d+)/); return m ? m[1] + '.' + m[2] : ''; }
+
+async function sha(buf) { const d = await crypto.subtle.digest('SHA-256', buf); return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join(''); }
+function idbOpen() { return new Promise((res, rej) => { const r = indexedDB.open('fk-check', 1); r.onupgradeneeded = () => r.result.createObjectStore('b'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
+function idbDo(db, mode, fn) { return new Promise((res, rej) => { const t = db.transaction('b', mode), q = fn(t.objectStore('b')); t.oncomplete = () => res(q && q.result); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error || new Error('aborted (full?)')); }); }
+
+async function auto() {
+  const v = ios();
+  set('env', v ? 'ok' : 'warn', v ? 'iOS ' + v + (Number(v.split('.')[0]) < 16 ? '（建議更新到 iOS 16 或以上）' : '') : '唔係 iPhone？ ' + navigator.platform);
+  const sa = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+  set('mode', 'ok', sa ? '主畫面 App · Home Screen app' : 'Safari（主畫面 App 都請試一次 · please also run it from the Home Screen app）');
+  set('secure', isSecureContext && 'serviceWorker' in navigator ? 'ok' : 'bad', (isSecureContext ? 'HTTPS ✓' : 'not HTTPS ✗') + ' · ' + ('serviceWorker' in navigator ? 'SW ✓' : 'SW ✗'));
+  try { const e = await navigator.storage.estimate(); const free = (e.quota || 0) - (e.usage || 0);
+    set('quota', free > 2 * 1073741824 ? 'ok' : free > 500 * 1048576 ? 'warn' : 'bad', '可用約 ' + mb(free) + '（已用 ' + mb(e.usage || 0) + '）');
+  } catch (e) { set('quota', 'warn', '讀唔到 ' + e.message); }
+  try { const p = navigator.storage.persist ? await navigator.storage.persist() : false; set('persist', p ? 'ok' : 'warn', p ? '已批准：iPhone 唔會自動清走 App 資料' : '未批准：主畫面 App 通常會批准；Safari 可能唔會'); }
+  catch (e) { set('persist', 'warn', e.message); }
+  let buf = null;
+  try {
+    set('idb', 'run', '儲存中…');
+    buf = new Uint8Array(60 * 1048576); for (let i = 0; i < buf.length; i += 4096) buf[i] = i & 255;
+    const db = await idbOpen(), t0 = performance.now();
+    await idbDo(db, 'readwrite', (s) => s.put({ type: 'x', buf: buf.buffer }, 'big'));
+    const back = await idbDo(db, 'readonly', (s) => s.get('big'));
+    const okLen = back && back.buf && back.buf.byteLength === buf.length;
+    await idbDo(db, 'readwrite', (s) => s.delete('big'));
+    set('idb', okLen ? 'ok' : 'bad', okLen ? '寫入、讀返、刪除 ✓ · ' + ms(t0) : '讀返大小唔啱');
+  } catch (e) { set('idb', 'bad', e.message || String(e)); }
+  try { set('sha', 'run', '計算中…'); const t0 = performance.now(); const h = await sha(buf || new Uint8Array(1)); set('sha', 'ok', ms(t0) + ' · ' + h.slice(0, 16) + '…'); }
+  catch (e) { set('sha', 'bad', e.message || String(e)); }
+  buf = null;
+  try { if (!('wakeLock' in navigator)) throw new Error('不支援 · not supported'); const w = await navigator.wakeLock.request('screen'); await w.release(); set('wake', 'ok', '支援 ✓'); }
+  catch (e) { set('wake', 'warn', (e.message || e) + '（可以喺設定 › 螢幕 › 自動鎖定 改長啲）'); }
+  try {
+    const st = await new Promise((res) => { const r = indexedDB.open('realynx-fieldkit'); r.onsuccess = () => { try { const q = r.result.transaction('kv').objectStore('kv').get('state'); q.onsuccess = () => res(q.result); q.onerror = () => res(null); } catch (e) { res(null); } }; r.onerror = () => res(null); });
+    const c = st && st.config;
+    if (!c) set('api', 'warn', '呢度未連接（Safari 同主畫面 App 分開儲存）· Not connected here');
+    else if (c.demo) set('api', 'warn', '示範模式 · demo mode');
+    else { const t0 = performance.now(); const r = await fetch(c.api + '?fk=1', { method: 'POST', body: JSON.stringify({ token: c.token, op: 'ping', args: {} }) }); const j = await r.json();
+      set('api', j.ok ? 'ok' : 'bad', j.ok ? '連線 ✓ · ' + ms(t0) : (j.message || j.error)); }
+  } catch (e) { set('api', 'bad', '連唔到：' + (e.message || e)); }
+}
+
+async function probeVideo(file) {
+  const u = URL.createObjectURL(file);
+  const info = await new Promise((res) => { const v = document.createElement('video'); v.preload = 'metadata'; v.muted = true;
+    v.onloadedmetadata = () => res({ d: v.duration, w: v.videoWidth, h: v.videoHeight }); v.onerror = () => res({}); v.src = u; setTimeout(() => res({}), 5000); });
+  URL.revokeObjectURL(u); return info;
+}
+async function onVideo(file) {
+  if (!file) return set('video', 'warn', '冇錄到 · cancelled');
+  try {
+    set('video', 'run', '處理中… ' + mb(file.size));
+    const info = await probeVideo(file), t0 = performance.now();
+    const buf = await file.arrayBuffer(); const h = await sha(buf);
+    const db = await idbOpen(); await idbDo(db, 'readwrite', (s) => s.put({ type: file.type, buf }, 'v')); await idbDo(db, 'readwrite', (s) => s.delete('v'));
+    const perMin = info.d ? file.size / info.d * 60 : 0;
+    set('video', 'ok', `${file.type || '?'} · ${mb(file.size)} · ${info.d ? info.d.toFixed(1) + ' 秒' : '?'} · ${info.w || '?'}×${info.h || '?'}` +
+      (perMin ? ` · 約 ${mb(perMin)}/分鐘` : '') + ` · 存＋指紋 ${ms(t0)}`);
+  } catch (e) { set('video', 'bad', e.message || String(e)); }
+}
+async function onPhoto(file) {
+  if (!file) return set('photo', 'warn', '冇影到 · cancelled');
+  try { const t0 = performance.now(); const h = await sha(await file.arrayBuffer()); set('photo', 'ok', `${file.type || '?'} · ${mb(file.size)} · 指紋 ${ms(t0)}`); }
+  catch (e) { set('photo', 'bad', e.message || String(e)); }
+}
+async function mic() {
+  try {
+    if (!window.MediaRecorder) throw new Error('MediaRecorder 不支援');
+    set('mic', 'run', '錄音中 3 秒… 講幾句嘢');
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const type = MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '';
+    const mr = new MediaRecorder(stream, Object.assign({ audioBitsPerSecond: 32000 }, type ? { mimeType: type } : {})), parts = [];
+    mr.ondataavailable = (e) => e.data.size && parts.push(e.data);
+    await new Promise((res) => { mr.onstop = res; mr.start(1000); setTimeout(() => mr.stop(), 3000); });
+    stream.getTracks().forEach((t) => t.stop());
+    const b = new Blob(parts, { type: mr.mimeType });
+    set('mic', b.size > 1000 ? 'ok' : 'bad', `${b.type} · ${(b.size / 1024).toFixed(0)} KB（約 ${mb(b.size / 3 * 3600)}/小時）`);
+  } catch (e) { set('mic', 'bad', e.message || String(e)); }
+}
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-tap]'), a = e.target.closest('[data-ans]');
+  if (t) { const k = t.dataset.tap; if (k === 'video') { $('vid').value = ''; $('vid').click(); } else if (k === 'photo') { $('pho').value = ''; $('pho').click(); } else if (k === 'mic') mic(); }
+  if (a) { const [k, v] = a.dataset.ans.split(':'); set(k, v === 'no' ? 'ok' : 'warn', v === 'no' ? '冇 — 只喺 App 入面 ✓' : '有 — iPhone 另外存咗一份入相簿'); }
+});
+$('vid').addEventListener('change', (e) => onVideo(e.target.files[0]));
+$('pho').addEventListener('change', (e) => onPhoto(e.target.files[0]));
+$('runAll').addEventListener('click', () => auto());
+draw();
+</script>
+</body>
+</html>

@@ -558,6 +558,7 @@ function vSettings() {
       <button class="btn line" data-a="refreshLists">重新下載資料 Refresh customers &amp; experts</button>
       <button class="btn line" data-a="downloadGallery">下載圖片庫（離線用）Download gallery photos</button>
       <button class="btn line" data-a="syncNow">立即同步 Sync now</button>
+      <a class="btn line" href="check.html" style="display:flex;align-items:center;justify-content:center;text-decoration:none">手機測試 Phone check</a>
       <button class="btn del" data-a="disconnect">${U.confirm ? '確認？未上載嘅資料會留喺手機 · Tap again' : c.demo ? '離開示範 · Leave demo' : '重新連接 Reconnect'}</button>
       <div class="help">提示：用 iPhone「語音備忘錄」錄長訪談。完成後在語音備忘錄按 ⋯ › 儲存到「檔案」，再喺 App 按 錄音 › 加入語音備忘錄檔案。· Long interviews: record in Voice Memos, then Save to Files and add it here.</div>
     </div></div>`;
