@@ -22,6 +22,9 @@ button.ghost{background:#fff;color:var(--navy);border:1px solid var(--navy)}
 .sum{background:var(--navy);color:#fff;border-radius:14px;padding:12px 14px;margin-top:12px;font-size:13px}
 .sum b{color:var(--gold)}
 input[type=file]{display:none}
+#camBox{position:fixed;inset:0;background:#000;z-index:9;display:none;flex-direction:column;align-items:center;justify-content:center;color:#fff}
+#camBox video{width:100%;max-height:75vh;object-fit:contain}#camBox b{font-size:40px;margin-top:12px}
+#still{max-width:100%;border-radius:10px;margin-top:6px;display:block}
 </style>
 </head>
 <body>
@@ -30,6 +33,7 @@ input[type=file]{display:none}
 <button class="big" id="runAll">① 自動測試 Run automatic tests</button>
 <div id="list"></div>
 <div class="sum" id="sum">未開始 Not started</div>
+<div id="camBox"><video id="live" playsinline muted autoplay></video><b id="cd">5</b><span>對住任何嘢影 · point at anything</span></div>
 <input id="vid" type="file" accept="video/*" capture="environment">
 <input id="pho" type="file" accept="image/*" capture="environment">
 <script>
@@ -48,7 +52,8 @@ const T = [
   ['videoPhotos', '③ 相簿有冇呢段片？Is that video in Photos?', 'ask'],
   ['photo', '④ 影一張相 Take a photo', 'tap'],
   ['photoPhotos', '⑤ 相簿有冇呢張相？Is that photo in Photos?', 'ask'],
-  ['mic', '⑥ App 內錄音 3 秒 Record 3 s in the app', 'tap']
+  ['mic', '⑥ App 內錄音 3 秒 Record 3 s in the app', 'tap'],
+  ['cam', '⑦ App 內錄影 1080p 5 秒 In-app camera, 5 s', 'tap']
 ];
 const R = {};
 const $ = (id) => document.getElementById(id);
@@ -150,9 +155,38 @@ async function mic() {
     set('mic', b.size > 1000 ? 'ok' : 'bad', `${b.type} · ${(b.size / 1024).toFixed(0)} KB（約 ${mb(b.size / 3 * 3600)}/小時）`);
   } catch (e) { set('mic', 'bad', e.message || String(e)); }
 }
+async function cam() {
+  const box = $('camBox'), live = $('live');
+  let stream;
+  try {
+    if (!window.MediaRecorder) throw new Error('MediaRecorder 不支援');
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } } });
+    const vt = stream.getVideoTracks()[0], st = vt.getSettings ? vt.getSettings() : {};
+    live.srcObject = stream; box.style.display = 'flex';
+    const type = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm'].find((t) => MediaRecorder.isTypeSupported(t)) || '';
+    const mr = new MediaRecorder(stream, Object.assign({ videoBitsPerSecond: 5000000 }, type ? { mimeType: type } : {})), parts = [];
+    mr.ondataavailable = (e) => e.data.size && parts.push(e.data);
+    await new Promise((res) => { mr.onstop = res; mr.start(1000); let n = 5; $('cd').textContent = n;
+      const iv = setInterval(() => { n--; $('cd').textContent = n; if (n <= 0) { clearInterval(iv); mr.stop(); } }, 1000); });
+    stream.getTracks().forEach((t) => t.stop()); box.style.display = 'none';
+    const blob = new Blob(parts, { type: mr.mimeType || type });
+    set('cam', 'run', '檢查中… ' + mb(blob.size));
+    const u = URL.createObjectURL(blob), v = document.createElement('video'); v.muted = true; v.playsInline = true; v.preload = 'auto'; v.src = u;
+    await new Promise((res) => { v.onloadeddata = res; v.onerror = res; setTimeout(res, 6000); });
+    const d = isFinite(v.duration) ? v.duration : 5;
+    v.currentTime = Math.min(2, d / 2);
+    await new Promise((res) => { v.onseeked = res; setTimeout(res, 4000); });
+    const c = document.createElement('canvas'); c.width = v.videoWidth; c.height = v.videoHeight; c.getContext('2d').drawImage(v, 0, 0);
+    const still = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.85));
+    URL.revokeObjectURL(u);
+    const okRes = Math.max(v.videoWidth, v.videoHeight) >= 1280;
+    set('cam', okRes && still ? 'ok' : 'warn', `${blob.type} · ${v.videoWidth}×${v.videoHeight} · 相機 ${st.width || '?'}×${st.height || '?'} · ${mb(blob.size)} · 約 ${mb(blob.size / 5 * 60)}/分鐘 · 截圖 ${still ? (still.size / 1024).toFixed(0) + ' KB' : '✗'}`);
+    if (still) { const img = document.createElement('img'); img.id = 'still'; img.src = URL.createObjectURL(still); const row = [...document.querySelectorAll('.row')].pop(); row.querySelector('.t').appendChild(img); }
+  } catch (e) { if (stream) stream.getTracks().forEach((t) => t.stop()); box.style.display = 'none'; set('cam', 'bad', e.message || String(e)); }
+}
 document.addEventListener('click', (e) => {
   const t = e.target.closest('[data-tap]'), a = e.target.closest('[data-ans]');
-  if (t) { const k = t.dataset.tap; if (k === 'video') { $('vid').value = ''; $('vid').click(); } else if (k === 'photo') { $('pho').value = ''; $('pho').click(); } else if (k === 'mic') mic(); }
+  if (t) { const k = t.dataset.tap; if (k === 'video') { $('vid').value = ''; $('vid').click(); } else if (k === 'photo') { $('pho').value = ''; $('pho').click(); } else if (k === 'mic') mic(); else if (k === 'cam') cam(); }
   if (a) { const [k, v] = a.dataset.ans.split(':'); set(k, v === 'no' ? 'ok' : 'warn', v === 'no' ? '冇 — 只喺 App 入面 ✓' : '有 — iPhone 另外存咗一份入相簿'); }
 });
 $('vid').addEventListener('change', (e) => onVideo(e.target.files[0]));
