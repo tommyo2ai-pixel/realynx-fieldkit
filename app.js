@@ -2,7 +2,7 @@
  * Everything is saved on the phone first (IndexedDB) and sent to the Realynx Apps Script when there is signal.
  * No build step: plain JavaScript, one file. */
 'use strict';
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const APP = document.getElementById('app');
 
 // ============================================================ constants
@@ -26,9 +26,11 @@ const PROMPTS = {
   exc: ['有冇試過書本講嘅方法唔work？', '新手通常喺{t}度做錯咩？', '有冇啲情況要反過嚟做？'],
   story: ['上次遇到{t}係幾時？當時點樣？', '你啱入行嗰陣，師傅點教你處理{t}？', '最難搞嗰次{t}係點？']
 };
-const TAUGHT = ['note', 'remark', 'photo', 'measure', 'case', 'mark'];
-const SCOPES = [['capture', '訪談及記錄經驗', 'Capture know-how'], ['voice_recording', '錄音', 'Voice recording'], ['internal_use', '貴公司內部使用', 'Internal use'],
-  ['defect_images', '缺陷相片', 'Defect photos'], ['anonymised_starter_pack', '匿名行業知識包', 'Anonymised Starter Pack']];
+const TAUGHT = ['note', 'remark', 'photo', 'measure', 'case', 'mark', 'video'];
+const SCOPES = [['capture', '訪談及記錄經驗', 'Capture know-how'], ['voice_recording', '錄音', 'Voice recording'], ['video', '錄影', 'Video: clips of him demonstrating (he and the factory may be visible)'],
+  ['internal_use', '貴公司內部使用', 'Internal use'], ['defect_images', '缺陷相片', 'Defect photos'], ['anonymised_starter_pack', '匿名行業知識包', 'Anonymised Starter Pack']];
+const SCOPE_DEFAULT = () => [true, true, false, true, true, false];
+const CLIP_MAX_SEC = 180;
 const PF = [['語音備忘錄已開始錄音', 'Voice Memos is recording — 開「語音備忘錄」按紅掣，再返嚟'],
   ['電量 30% 以上', 'Battery above 30% — 1 小時錄音約用 10–15%'],
   ['儲存空間 1 GB 以上', 'Storage — 1 小時錄音約 60 MB，相片另計'],
@@ -70,6 +72,7 @@ const I = {
   moon: sv('<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>', '#e7b25c', 2.2, 18),
   pic: sv('<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.8"/><path d="M21 16l-5-5-8 8"/>', '#1f3a5f', 2, 18),
   ask: sv('<path d="M4 5h16v11H9l-5 4z"/><path d="M10 9.5a2 2 0 1 1 2.5 1.9c-.4.1-.5.4-.5.8M12 14h.01"/>', '#1f3a5f', 2, 18),
+  video: sv('<rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3z"/>', '#1f3a5f', 2, 26),
   star: sv('<path d="M12 3l2.6 5.6 6 .7-4.5 4.1 1.2 6L12 16.4 6.7 19.4l1.2-6L3.4 9.3l6-.7z"/>', '#e7b25c', 2, 26)
 };
 
@@ -144,6 +147,11 @@ function hasConsent(k) {
   const x = expert(k); if (!x) return false;
   return !!x.consent || Object.values(S.consents).some((c) => c.expertKey === x.key || (x.uid && c.expertKey === x.uid));
 }
+function hasScope(k, scope) {
+  const x = expert(k); if (!x) return false;
+  if ((x.scope || []).indexOf(scope) >= 0) return true;
+  return Object.values(S.consents).some((c) => (c.expertKey === x.key || (x.uid && c.expertKey === x.uid)) && (c.scope || []).indexOf(scope) >= 0);
+}
 const covOf = (s, t) => (s.cov && s.cov[t]) || {};
 const missingOf = (s, t) => AREAS.filter((a) => !covOf(s, t)[a[0]]);
 
@@ -174,9 +182,9 @@ function render() {
 function view() {
   if (!S.config) return vSetup();
   const scr = S.ui.screen;
-  if (['session', 'preflight', 'quiet', 'show', 'finish', 'thanks'].indexOf(scr) >= 0 && !sess()) { S.ui.screen = 'home'; return vHome(); }
+  if (['session', 'preflight', 'quiet', 'show', 'finish', 'thanks', 'camera'].indexOf(scr) >= 0 && !sess()) { S.ui.screen = 'home'; return vHome(); }
   return ({ home: vHome, new: vNew, consent: vConsent, preflight: vPreflight, session: vSession, quiet: vQuiet, show: vShow, finish: vFinish,
-    thanks: vThanks, uploads: vUploads, settings: vSettings })[scr]?.() || vHome();
+    thanks: vThanks, uploads: vUploads, settings: vSettings, camera: vCamera, cleanup: vCleanup })[scr]?.() || vHome();
 }
 function bar(title, sub, back) {
   return `<div class="bar"><button class="ib" data-a="go" data-v="${back}" aria-label="Back">${I.back()}</button><div class="t"><b>${title}</b>${sub ? `<span>${sub}</span>` : ''}</div></div>`;
@@ -190,6 +198,7 @@ function toast(msg) {
 function tick() {
   const s = sess(), c = fmt(secsOf(s));
   APP.querySelectorAll('[data-clock]').forEach((el) => { el.textContent = c; });
+  if (U.cam && U.cam.mr) APP.querySelectorAll('[data-camclock]').forEach((el) => { el.textContent = fmt((Date.now() - U.cam.start) / 1000).replace(/^00:/, ''); });
   const n = stamp(Date.now());
   APP.querySelectorAll('[data-now]').forEach((el) => { el.textContent = n.date + ' ' + n.clock; });
 }
@@ -245,7 +254,7 @@ function pendingCount() {
   let n = 0;
   Object.values(S.sessions).forEach((s) => {
     if (s.deleted && !s.metaDirty) return;
-    n += s.items.filter((i) => i.blobKey && !i.blobDone && !i.deleted).length;
+    n += s.items.filter((i) => i.blobKey && !i.verified && !i.deleted).length;
     if ((s.changedAt || 0) > (s.syncedAt || 0) || s.metaDirty || !s.sid) n++;
   });
   return n + S.localExperts.filter((x) => !x.id).length + Object.values(S.consents).filter((c) => !c.done).length;
@@ -288,6 +297,7 @@ function vHome() {
         <div style="flex:1;display:flex;flex-direction:column"><b style="font-size:15px">${pend ? '等候上載 ' + pend + ' 項 · Waiting' : '全部已上載 All saved to Drive'}</b>
         <span style="font-size:12px;color:var(--muted)"><span class="netdot ${navigator.onLine ? U.net : ''}"></span>${h(netLine())}</span></div>
         <span style="font-size:13px;color:var(--navy);font-weight:700">查看</span></button>
+      ${(S.cleanup || []).some((c) => !c.done) ? `<button class="warnbox" data-a="go" data-v="cleanup"><b style="flex:1">可以刪除 ${(S.cleanup || []).filter((c) => !c.done).length} 個檔案 · Safe to delete</b><span>查看 ›</span></button>` : ''}
       ${U.swUpdate ? '<button class="warnbox" data-a="reload"><b style="flex:1">新版本已準備好 · New version ready</b><span>重開 ›</span></button>' : ''}
       <div class="lbl" style="margin-top:6px">訪談 SESSIONS</div>
       ${cards || '<div class="help">未有訪談。按下面「新訪談」開始。· No sessions yet.</div>'}
@@ -323,6 +333,7 @@ function vNew() {
       </div>
       ${ex && !ok ? `<button class="warnbox" data-a="goConsent">${I.warn}<div style="flex:1;display:flex;flex-direction:column"><b style="font-size:15px">未有同意書 Consent missing</b><span style="font-size:12.5px">錄音前請先簽署 · Sign before recording</span></div><b>簽署 ›</b></button>` : ''}
       ${ex && ok ? `<div class="okbox">${I.check('#235a42', 20)} 同意書已簽署 Consent signed</div>` : ''}
+      ${ex && ok && !hasScope(ex.key, 'video') ? `<button class="btn line" data-a="goConsent" style="height:44px">補簽錄影同意 Add video consent</button>` : ''}
     </div>
     <div class="dock">
       ${editing ? '<button class="big" data-a="saveDetails">儲存修改 Save changes</button>'
@@ -334,7 +345,7 @@ function vNew() {
 // ============================================================ CONSENT
 function vConsent() {
   const x = expert(U.f.expertKey);
-  const sc = U.f.scopes || [true, true, true, true, false];
+  const sc = U.f.scopes || SCOPE_DEFAULT();
   return `<div class="scr">${bar('同意書 Consent', h(x ? x.name + '（' + x.short + '）' : '') + ' · ' + h(U.f.cid), 'new')}
     <div class="scroll">
       <div style="font-size:12.5px;color:var(--ink2)">請師傅逐項確認。Please ask the expert to confirm each item.</div>
@@ -378,7 +389,7 @@ function vPreflight() {
 function badge(kind) {
   return ({ mark: ['#e7b25c', '#1f2a37'], photo: ['#e8eef6', '#1f3a5f'], note: ['#eef3ea', '#2d5a3f'], gap: ['#fdf3e2', '#7a4608'], remark: ['#f1e8f6', '#5b2d74'],
     switch: ['#17304f', '#e7b25c'], todo: ['#eceff3', '#3b4654'], case: ['#fbeceb', '#8c2f25'], audio: ['#e8eef6', '#1f3a5f'], measure: ['#e6f2f4', '#1d5b66'],
-    show: ['#20303f', '#ffffff'], prompt: ['#fff7e0', '#7a4608'] })[kind] || ['#eee', '#333'];
+    show: ['#20303f', '#ffffff'], prompt: ['#fff7e0', '#7a4608'], video: ['#2b1d3a', '#e7b25c'] })[kind] || ['#eee', '#333'];
 }
 function itemState(s, it) {
   if (S.config && S.config.demo) return '示範';
@@ -390,7 +401,7 @@ function vSession() {
   const items = liveItems(s);
   const shown = items.filter((i) => s.filter === 'all' || !s.filter || i.topic === (s.filter === 'current' ? s.current : s.filter));
   const miss = s.current ? missingOf(s, s.current).length : 0;
-  items.filter((i) => i.kind === 'photo' && i.blobKey).forEach((i) => ensureUrl(i.blobKey));
+  items.filter((i) => (i.kind === 'photo' || i.kind === 'video') && (i.thumbKey || i.blobKey)).forEach((i) => ensureUrl(i.thumbKey || i.blobKey));
   return `<div class="scr">
     <div class="shead">
       <div class="row" style="gap:4px"><button class="ib" data-a="go" data-v="home" aria-label="Home">${I.back('#ffffff')}</button>
@@ -418,8 +429,8 @@ function vSession() {
       <div class="hs" style="gap:6px"><span style="font-size:12px;color:var(--muted);align-self:center;flex-shrink:0">顯示</span>
         ${[['all', '全部'], ['current', '只看 ' + (s.current || '')]].concat(s.topics.filter((tp) => tp !== s.current).map((tp) => [tp, tp]))
           .map((f) => `<button class="chip sm ${(s.filter || 'all') === f[0] ? 'on' : ''}" data-a="filter" data-v="${h(f[0])}">${h(f[1])}</button>`).join('')}</div>
-      ${shown.map((i) => { const c = badge(i.kind), x2 = stamp(i.at), url = i.blobKey && U.urls[i.blobKey];
-        return `<button class="item" data-a="edit" data-v="${h(i.uid)}"><div class="badge" style="background:${c[0]};color:${c[1]}">${url && i.kind === 'photo' ? `<img src="${url}" alt="">` : h(i.tag)}</div>
+      ${shown.map((i) => { const c = badge(i.kind), x2 = stamp(i.at), url = U.urls[i.thumbKey || i.blobKey];
+        return `<button class="item" data-a="edit" data-v="${h(i.uid)}"><div class="badge" style="background:${c[0]};color:${c[1]}">${url && (i.kind === 'photo' || i.kind === 'video') ? `<img src="${url}" alt="">` : h(i.tag)}</div>
           <div class="m"><b>${h(i.title)}</b>${i.text ? `<span>${h(i.text)}</span>` : ''}${i.kind === 'switch' ? '' : `<span style="color:var(--navy);font-size:11.5px">主題：${h(i.topic || '—')}</span>`}</div>
           <div class="r"><b>${x2.date.slice(5)}</b><span>${x2.clock}</span><span style="font-size:10.5px;color:var(--faint)">${h(i.rec)}</span><span style="font-size:11px;color:${itemState(s, i) === '已上載' ? '#2d6a4f' : '#9a5b0c'}">${h(itemState(s, i))}</span></div></button>`; }).join('')}
     </div>
@@ -427,7 +438,7 @@ function vSession() {
       <button class="tab" data-a="photo">${I.cam()}相片</button>
       <button class="tab" data-a="sheet" data-v="note">${I.note}筆記</button>
       <button class="tab main" data-a="sheet" data-v="remark">${I.bolt}快速備註</button>
-      <button class="tab" data-a="sheet" data-v="audio">${I.mic}錄音</button>
+      <button class="tab" data-a="sheet" data-v="audio">${I.video}錄影錄音</button>
       <button class="tab" data-a="go" data-v="finish">${I.done}完成</button>
     </div></div>`;
 }
@@ -451,7 +462,7 @@ function vQuiet() {
 // ============================================================ GALLERY / SHOW
 function galleryFor(s) {
   const list = S.cache.gallery.filter((g) => g.cid === s.cid || g.cid === '*').map((g) => Object.assign({}, g, { key: g.file ? 'img:' + g.file : '' }))
-    .concat(liveItems(s).filter((i) => i.kind === 'photo').map((i) => ({ id: 'p' + i.uid, defect: i.defect || '其他', src: '今日', note: i.text || '', key: i.blobKey })));
+    .concat(liveItems(s).filter((i) => i.kind === 'photo').map((i) => ({ id: 'p' + i.uid, defect: i.defect || '其他', src: '今日', note: i.text || '', key: i.verified ? (i.thumbKey || '') : i.blobKey })));
   const n = {};
   list.forEach((g) => { n[g.defect] = (n[g.defect] || 0) + 1; g.n = n[g.defect]; });
   return { list, counts: n };
@@ -478,13 +489,14 @@ function vFinish() {
   const s = sess(), x = expert(s.expertKey), items = liveItems(s);
   const taught = items.filter((i) => TAUGHT.indexOf(i.kind) >= 0).length;
   const missN = s.topics.reduce((n, t) => n + missingOf(s, t).length, 0);
-  const pend = items.filter((i) => i.blobKey && !i.blobDone).length;
+  const pend = items.filter((i) => i.blobKey && !i.verified).length;
   const hasAudio = items.some((i) => i.kind === 'audio' && i.sub === 'memo');
   const chk = [['同意書 Consent', hasConsent(s.expertKey) ? '已簽名 Signed' : '未簽 Missing', hasConsent(s.expertKey)],
     ['語音備忘錄 Recording', hasAudio ? '已加入' : '未加入 — 按「錄音」› 加入語音備忘錄檔案（或之後在 Mac 處理）', hasAudio],
     ['相片 Photos', items.filter((i) => i.kind === 'photo').length + ' 張', true],
+    ['片段 Clips', items.filter((i) => i.kind === 'video').length + ' 段', true],
     ['筆記及備註 Notes & remarks', items.filter((i) => ['note', 'remark', 'gap', 'measure', 'todo', 'case'].indexOf(i.kind) >= 0).length + ' 項', true],
-    ['上載 Uploads', pend ? pend + ' 個檔案未上載（可離開，有網絡時會繼續）' : '檔案全部上載', !pend]];
+    ['上載 Uploads', pend ? pend + ' 個檔案未上載或未核對（可離開，有網絡時會繼續）' : '檔案全部上載、核對，並已從手機刪除', !pend]];
   return `<div class="scr">${bar('完成訪談 Finish session', h((s.sid || '') + ' · ' + (x ? x.short : '')), 'session')}
     <div class="scroll">
       <button data-a="go" data-v="thanks" style="display:flex;align-items:center;gap:12px;padding:14px 16px;border-radius:14px;border:2px solid #e7b25c;background:#1f3a5f;text-align:left">${I.star}
@@ -522,18 +534,58 @@ function vThanks() {
 }
 
 // ============================================================ UPLOADS / SETTINGS
+function vCamera() {
+  const c = U.cam || {}, rec = !!c.mr, portrait = window.innerHeight > window.innerWidth;
+  return `<div class="scr" style="background:#000;color:#fff">
+    <div class="row" style="padding:calc(var(--st) + 8px) 14px 8px;gap:10px">
+      <span class="dot ${rec ? 'rec' : ''}"></span><b data-camclock style="font-variant-numeric:tabular-nums;font-size:17px">${rec ? fmt((Date.now() - c.start) / 1000).replace(/^00:/, '') : '0:00'}</b>
+      <span style="flex:1;font-size:12px;color:#8a95a3">最長 3:00 · ${h((sess() || {}).current || '')}</span>
+      ${rec ? '' : '<button data-a="closeCamera" style="height:36px;padding:0 14px;border-radius:18px;border:1px solid #444;background:transparent;color:#ddd;font-size:14px">取消</button>'}
+    </div>
+    <div style="position:relative;flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden">
+      <video id="camLive" playsinline muted autoplay style="width:100%;height:100%;object-fit:contain;background:#000"></video>
+      ${portrait ? '<div style="position:absolute;top:12px;left:12px;right:12px;text-align:center;font-size:14px;background:rgba(0,0,0,.55);padding:8px;border-radius:10px">打橫影效果最好 · Turn the phone sideways</div>' : ''}
+      ${c.err ? `<div style="position:absolute;left:16px;right:16px;text-align:center;color:#f2b8b0">${h(c.err)}</div>` : ''}
+    </div>
+    <div style="padding:14px 0 calc(18px + var(--sb));display:flex;flex-direction:column;align-items:center;gap:8px">
+      <button data-a="camRecord" aria-label="${rec ? 'Stop' : 'Record'}" style="width:78px;height:78px;border-radius:39px;border:4px solid #fff;background:transparent;display:flex;align-items:center;justify-content:center">
+        <span style="display:block;${rec ? 'width:30px;height:30px;border-radius:6px' : 'width:60px;height:60px;border-radius:30px'};background:#ff3b30"></span></button>
+      <span style="font-size:12px;color:#8a95a3">${rec ? '按一下停止 · Tap to stop' : '請師傅邊做邊講 · Ask him to talk while he works'}</span>
+    </div></div>`;
+}
+function vCleanup() {
+  const open = (S.cleanup || []).filter((c) => !c.done), done = (S.cleanup || []).filter((c) => c.done).slice(-5).reverse();
+  return `<div class="scr">${bar('可以刪除 Safe to delete', '已上載並核對 · uploaded and checked', 'home')}
+    <div class="scroll">
+      <div class="help">以下檔案已經安全上載到 Drive，指紋核對一致。App 冇權刪除其他 App 嘅檔案，請你自己刪，然後按「已刪除」。<br>These files are safely in Drive (fingerprint matched). Delete them in their own app, then tap 已刪除.</div>
+      ${open.map((c) => `<div class="card" style="padding:14px;display:flex;flex-direction:column;gap:6px">
+        <b style="font-size:15px">${h(c.where)}：${h(c.name)}</b>
+        <span style="font-size:12.5px;color:var(--muted)">${h(c.detail)} · Drive 已確認 ✓ ${h(c.checked)}</span>
+        <span style="font-size:12.5px;color:var(--ink2)">${h(c.how)}</span>
+        <button class="btn line" data-a="cleanDone" data-v="${h(c.id)}" style="height:44px">已刪除 Deleted</button></div>`).join('') || '<div class="okbox">冇嘢要刪 · Nothing to delete</div>'}
+      ${done.length ? '<div class="lbl" style="margin-top:6px">最近已刪除</div>' + done.map((c) => `<span style="font-size:12.5px;color:var(--muted)">✓ ${h(c.where)}：${h(c.name)}</span>`).join('') : ''}
+    </div></div>`;
+}
+function fileState(it) {
+  if (it.verified) return ['已上載 · 已核對 ✓ · 已從手機刪除', '#2d6a4f', 1];
+  if (it.verifyFail) return ['核對唔啱，重新上載中', '#b0463a', it.progress || 0];
+  if (it.fileId) return ['已上載 · 核對中…', '#9a5b0c', 1];
+  if (it.progress) return ['上載中 ' + Math.round(it.progress * 100) + '%', '#2f5584', it.progress];
+  return ['等候上載', '#9a5b0c', 0];
+}
 function vUploads() {
   const rows = Object.values(S.sessions).filter((s) => !s.deleted).sort((a, b) => (b.changedAt || 0) - (a.changedAt || 0)).map((s) => {
     const x = expert(s.expertKey), items = liveItems(s);
-    const ph = items.filter((i) => i.kind === 'photo'), phDone = ph.filter((i) => i.blobDone).length;
-    const au = items.filter((i) => i.kind === 'audio');
+    const ph = items.filter((i) => i.kind === 'photo' && i.blobKey), phDone = ph.filter((i) => i.verified).length;
+    const au = items.filter((i) => (i.kind === 'audio' || i.kind === 'video') && i.blobKey);
     const notesOk = (s.syncedAt || 0) >= (s.changedAt || 0) && s.sid;
     return `<div class="card" style="padding:14px;display:flex;flex-direction:column;gap:8px">
       <div class="row" style="justify-content:space-between"><b style="font-size:15px">${h(s.sid || '未建立 Not created')} · ${h(x ? x.short : '')}</b><span style="font-size:12px;color:var(--muted)">${h(s.date)}</span></div>
       <span style="font-size:13px;color:${notesOk ? '#2d6a4f' : '#9a5b0c'}">筆記及時間線 Notes: ${notesOk ? '已同步 ' + stamp(s.syncedAt).clock : '等候上載'}</span>
-      ${ph.length ? `<span style="font-size:13px;color:${phDone === ph.length ? '#2d6a4f' : '#9a5b0c'}">相片 Photos: ${phDone} / ${ph.length}</span>` : ''}
-      ${au.map((a) => `<div style="display:flex;flex-direction:column;gap:4px"><span style="font-size:13px">${h(a.title)} · ${a.size ? mb(a.size) : ''} · ${a.blobDone ? '<b style="color:#2d6a4f">已上載</b>' : a.progress ? Math.round(a.progress * 100) + '%' : '等候'}</span>
-        <div class="prog"><div style="width:${a.blobDone ? 100 : Math.round((a.progress || 0) * 100)}%;${a.blobDone ? 'background:#2d6a4f' : ''}"></div></div></div>`).join('')}
+      ${ph.length ? `<span style="font-size:13px;color:${phDone === ph.length ? '#2d6a4f' : '#9a5b0c'}">相片 Photos: ${phDone} / ${ph.length} 已上載、核對 ✓ 並從手機刪除（保留細圖）</span>` : ''}
+      ${au.map((a) => { const st = fileState(a); return `<div style="display:flex;flex-direction:column;gap:4px"><span style="font-size:13px">${h(a.title)} · ${a.size ? mb(a.size) : ''}</span>
+        <span style="font-size:12px;color:${st[1]}">${st[0]}</span>
+        <div class="prog"><div style="width:${Math.round(st[2] * 100)}%;${a.verified ? 'background:#2d6a4f' : ''}"></div></div></div>`; }).join('')}
       <span style="font-size:11.5px;color:var(--faint)">Drive › customers/${h(s.cid)}/sessions/${h(s.sid || '…')}</span></div>`;
   }).join('');
   return `<div class="scr">${bar('上載 Uploads', '沒有網絡時會等候，恢復後繼續 · Resumes when signal returns', 'home')}
@@ -600,15 +652,29 @@ function vSheet() {
       CASEF.map((c) => `<label class="fld">${c[1]}<input class="inp" data-bind="f.${c[0]}" ${c[0] === 'minutes' ? 'inputmode="numeric"' : ''} value="${h(U.f[c[0]] || '')}" placeholder="${h(c[2])}"></label>`).join('') +
       '<button class="btn" data-a="saveCase">儲存個案 Save case</button>' + cancel;
     case 'audio': {
-      const r = U.rec;
-      return title('錄音 Audio') +
-        `<button data-a="pickMemo" style="min-height:72px;border-radius:14px;border:1px solid #1f3a5f;background:#fff;text-align:left;padding:12px 14px;display:flex;flex-direction:column;gap:2px"><b style="font-size:16px;color:#1f3a5f">加入「語音備忘錄」錄音 Add Voice Memos file</b>
-          <span style="font-size:12px;color:var(--muted)">先喺語音備忘錄按 ⋯ › 儲存到「檔案」，再喺呢度揀。大檔案會分段上載。</span></button>
+      const r = U.rec, okVid = hasScope(s.expertKey, 'video');
+      return title('錄影錄音 Video &amp; audio') +
+        `<button data-a="openCamera" style="min-height:76px;border-radius:14px;border:0;background:${okVid ? '#1f3a5f' : '#c9c2b3'};color:#fff;text-align:left;padding:12px 14px;display:flex;align-items:center;gap:12px">
+          ${sv('<rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3z"/>', '#e7b25c', 2, 30)}
+          <span style="display:flex;flex-direction:column;gap:2px"><b style="font-size:16px">錄影片段 Film a clip</b>
+          <span style="font-size:12px;opacity:.9">${okVid ? '一段一個動作，最長 3 分鐘 · 打橫影 · 請師傅邊做邊講' : '同意書未包括「錄影」— 先補簽 · Consent does not include video'}</span></span></button>
+        <button data-a="pickMemo" style="min-height:64px;border-radius:14px;border:1px solid #1f3a5f;background:#fff;text-align:left;padding:12px 14px;display:flex;flex-direction:column;gap:2px"><b style="font-size:15px;color:#1f3a5f">加入「語音備忘錄」錄音 Add Voice Memos file</b>
+          <span style="font-size:12px;color:var(--muted)">先喺語音備忘錄按 ⋯ › 儲存到「檔案」，再喺呢度揀。上載核對後，App 會提你喺語音備忘錄刪除。</span></button>
         <div class="card" style="padding:14px;display:flex;flex-direction:column;gap:10px;align-items:stretch">
           <b>App 內錄音 Record in the app <span style="font-weight:400;color:var(--muted);font-size:12px">（最長 60 分鐘 · 約 15 MB／小時）</span></b>
-          <span style="font-size:12px;color:var(--muted)">每 30 秒自動保存；上載後自動從手機刪除。錄音時保持 App 開住、唔好鎖機。長訪談用語音備忘錄最穩陣。</span>
+          <span style="font-size:12px;color:var(--muted)">每 30 秒自動保存；上載核對後自動從手機刪除。錄音時保持 App 開住、唔好鎖機。</span>
           <button class="rec-btn ${r ? 'on' : ''}" data-a="recNote">${r ? '停止 Stop<br><span data-recclock style="font-size:14px">' + fmt((Date.now() - r.start) / 1000) + '</span>' : '錄音 Record'}</button>
         </div>` + cancel;
+    }
+    case 'clip': {
+      const f = U.f;
+      return title('片段 Clip', fmt(f.secs || 0).replace(/^00:/, '') + ' · ' + mb(f.size || 0) + ' · ' + (f.w && f.h ? f.w + '×' + f.h : '')) +
+        `<div class="prev" style="height:190px">${f.thumbUrl ? `<img src="${f.thumbUrl}" alt="">` : '[片段]'}</div>
+        <label class="fld" style="font-size:13px;color:var(--ink)">片段名稱：師傅做緊咩？What does it show? *
+          <input class="inp" data-bind="f.task" value="${h(f.task || '')}" placeholder="例：換網紋輥、量黏度、壓低回墨管"></label>
+        <div class="chips">${['換網紋輥', '量黏度', '調 pH', '洗版', '換墨', '開機前檢查'].map((t) => `<button class="chip sm" data-a="fSet" data-v="task:${t}">${t}</button>`).join('')}</div>
+        <button class="btn" data-a="saveClip">儲存片段 Save clip</button>
+        <button class="btn del ${U.confirm ? 'on' : ''}" data-a="discardClip">${U.confirm ? '確認唔要？再按一次' : '唔要呢段 Discard'}</button>`;
     }
     case 'edit': {
       const e = U.edit, it = s && s.items.find((i) => i.uid === e.uid);
@@ -616,15 +682,16 @@ function vSheet() {
       const x2 = stamp(it.at);
       const textKind = TEXT_KINDS.indexOf(e.kind) >= 0;
       return title('修改 Edit', '記錄於 Recorded ' + x2.date + ' ' + x2.clock + (it.rec ? ' · ' + h(it.rec) : '')) +
-        (it.kind === 'photo' ? `<div class="prev" style="height:140px">${U.urls[it.blobKey] ? `<img src="${U.urls[it.blobKey]}" alt="">` : '[相片]'}</div>
+        (it.kind === 'photo' ? `<div class="prev" style="height:140px">${U.urls[it.thumbKey || it.blobKey] ? `<img src="${U.urls[it.thumbKey || it.blobKey]}" alt="">` : '[相片]'}</div>
           <div class="h">缺陷類型 Defect</div><div class="chips">${DEFECTS.map((d) => `<button class="chip ${e.defect === d ? 'on' : ''}" data-a="eSet" data-v="defect:${d}">${d}</button>`).join('')}</div>
           ${e.defect === '其他' ? `<label class="fld">其他缺陷<input class="inp" data-bind="e.defectOther" value="${h(e.defectOther || '')}"></label>` : ''}
           <label class="fld">承印物 Substrate<input class="inp" data-bind="e.substrate" value="${h(e.substrate || '')}"></label>
           <label class="fld">說明 Caption<input class="inp" data-bind="e.caption" value="${h(e.caption || '')}"></label>` : '') +
         (textKind ? `<div class="h">類別 Category</div><div class="chips">${KINDS.map((k) => `<button class="chip sm ${e.kind === k[0] ? 'on' : ''}" data-a="eSet" data-v="kind:${k[0]}">${k[1]}</button>`).join('')}</div>` : '') +
+        (it.kind === 'video' ? `<label class="fld" style="font-size:13px;color:var(--ink)">片段名稱 What it shows<input class="inp" data-bind="e.task" value="${h(e.task || '')}"></label>` : '') +
         (it.kind === 'case' ? CASEF.map((c) => `<label class="fld">${c[1]}<input class="inp" data-bind="e.fields.${c[0]}" value="${h((e.fields || {})[c[0]] || '')}"></label>`).join('') : '') +
         (it.kind !== 'switch' ? `<div class="h">主題 Topic</div><div class="chips">${s.topics.map((t) => `<button class="chip sm ${e.topic === t ? 'on' : ''}" data-a="eSet" data-v="topic:${h(t)}">${h(t)}</button>`).join('')}</div>` : '') +
-        (it.kind !== 'photo' && it.kind !== 'case' ? `<label class="fld" style="font-size:13px;color:var(--ink)">內容 Text<textarea class="inp" data-bind="e.text">${h(e.text || '')}</textarea></label>` : '') +
+        (it.kind !== 'photo' && it.kind !== 'case' && it.kind !== 'video' ? `<label class="fld" style="font-size:13px;color:var(--ink)">內容 Text<textarea class="inp" data-bind="e.text">${h(e.text || '')}</textarea></label>` : '') +
         `<button class="btn" data-a="saveEdit">儲存修改 Save changes</button><button class="btn del ${e.confirm ? 'on' : ''}" data-a="deleteItem">${e.confirm ? '確認刪除？再按一次 Tap again' : '刪除 Delete'}</button>` + cancel;
     }
     case 'newExpert': return title('新專家 New expert', '存入 EXPERTS，之後要簽同意書') +
@@ -676,10 +743,11 @@ function vSheet() {
 // ============================================================ after render hooks
 function after() {
   if (S.ui.screen === 'consent' && !U.sheet) initSig();
+  if (S.ui.screen === 'camera' && U.cam && U.cam.stream) { const v = document.getElementById('camLive'); if (v && v.srcObject !== U.cam.stream) { v.srcObject = U.cam.stream; v.play().catch(() => {}); } }
   if (S.ui.screen === 'settings' && navigator.storage && navigator.storage.estimate) navigator.storage.estimate().then((e) => {
     const el = document.getElementById('storageLine'); if (el) el.textContent = '儲存空間 Storage: 已用 ' + mb(e.usage || 0) + (e.quota ? ' / 可用約 ' + mb(e.quota) : '');
   });
-  wake(['session', 'quiet', 'show'].indexOf(S.ui.screen) >= 0);
+  wake(['session', 'quiet', 'show', 'camera'].indexOf(S.ui.screen) >= 0);
 }
 let wl = null;
 async function wake(on) {
@@ -697,7 +765,7 @@ function ensureUrl(key, remoteFile) {
   U.urls[key] = null;
   getBlob(key).then((b) => {
     if (b) { U.urls[key] = URL.createObjectURL(b); renderSoon(); return; }
-    if (remoteFile && canSync()) { imgQueue.push([key, remoteFile]); pumpImages(); } else delete U.urls[key];
+    if (remoteFile && canSync()) { imgQueue.push([key, remoteFile]); pumpImages(); } else U.urls[key] = ''; // gone (uploaded and removed): don't look again
   }).catch(() => { delete U.urls[key]; });
 }
 async function pumpImages() {
@@ -765,6 +833,59 @@ async function shrink(file, max = 2000, q = 0.85) {
 let fileTarget = null;
 function pick(input, target) { fileTarget = target; const el = document.getElementById(input); el.value = ''; el.click(); }
 
+function stopCamStream() { const c = U.cam; if (c) { clearTimeout(c.max); if (c.stream) c.stream.getTracks().forEach((t) => t.stop()); c.stream = null; } }
+function grabThumb(c, id) {
+  try {
+    const v = document.getElementById('camLive'); if (!v || !v.videoWidth) return;
+    const sc = 480 / Math.max(v.videoWidth, v.videoHeight), cv = document.createElement('canvas');
+    cv.width = Math.round(v.videoWidth * sc); cv.height = Math.round(v.videoHeight * sc);
+    cv.getContext('2d').drawImage(v, 0, 0, cv.width, cv.height);
+    cv.toBlob((b) => { if (b) putBlob('th:vd:' + id, b).then(() => { if (S.camActive && S.camActive.id === id) { S.camActive.thumb = true; save(); } }); }, 'image/jpeg', 0.72);
+  } catch (e) { /* no preview picture, not important */ }
+}
+async function assembleClip(recovered) {
+  const ca = S.camActive; if (!ca) return null;
+  const parts = [];
+  for (let i = 0; i < ca.n; i++) { const b = await getBlob('vp:' + ca.id + ':' + i); if (b) parts.push(b); }
+  S.camActive = null;
+  for (let i = 0; i < ca.n; i++) DB.del('blobs', 'vp:' + ca.id + ':' + i).catch(() => {});
+  if (!parts.length) { save(true); return null; }
+  const blob = new Blob(parts, { type: ca.mime }), key = 'vd:' + ca.id;
+  await putBlob(key, blob); save(true);
+  const thumbKey = (await getBlob('th:' + key)) ? 'th:' + key : null;
+  return { clipKey: key, thumbKey, size: blob.size, mime: blob.type, secs: recovered ? 5 * parts.length : (Date.now() - ca.start) / 1000, w: ca.w, h: ca.h, start: ca.start, sessKey: ca.sessKey, topic: ca.topic, recovered };
+}
+async function openClipSheet(clip) {
+  if (clip.sessKey) S.ui.active = clip.sessKey;
+  S.ui.screen = 'session';
+  const tb = clip.thumbKey && await getBlob(clip.thumbKey);
+  U.f = Object.assign({}, clip, { task: clip.recovered ? '（中斷後救回）' : '', thumbUrl: tb ? URL.createObjectURL(tb) : '' });
+  U.confirm = false; U.sheet = 'clip'; render();
+}
+async function sha256(blob) {
+  const d = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+function addCleanup(it) {
+  if (it.origin !== 'voicememo' && it.origin !== 'library') return;
+  S.cleanup = S.cleanup || [];
+  if (S.cleanup.some((c) => c.id === it.uid)) return;
+  const when = stamp(it.fileTime || it.at);
+  S.cleanup.push(it.origin === 'voicememo'
+    ? { id: it.uid, where: '語音備忘錄', name: (it.fileName || '').replace(/\.\w+$/, ''), detail: when.date + ' · ' + mb(it.size || 0), checked: stamp(Date.now()).clock,
+        how: '語音備忘錄 › 揀呢段 › 垃圾桶；再去「最近刪除」清除', done: false }
+    : { id: it.uid, where: '相簿', name: it.title || '相片', detail: '影於 ' + when.date + ' ' + when.clock.slice(0, 5), checked: stamp(Date.now()).clock,
+        how: '相片 App › 揀呢張 › 垃圾桶；再去「最近刪除」清除', done: false });
+}
+async function markVerified(it, keepThumb) {
+  it.verified = true; it.blobDone = true; it.verifyFail = false; it.progress = 1;
+  if (keepThumb && !it.thumbKey && it.blobKey) { // older photos: keep a small preview before removing the full one
+    const b = await getBlob(it.blobKey); if (b) { const t = await shrink(b, 480, 0.72); await putBlob('th:' + it.blobKey, t); it.thumbKey = 'th:' + it.blobKey; }
+  }
+  if (it.blobKey) { await DB.del('blobs', it.blobKey).catch(() => {}); if (U.urls[it.blobKey]) { URL.revokeObjectURL(U.urls[it.blobKey]); } U.urls[it.blobKey] = ''; }
+  addCleanup(it); save(); renderSoon();
+}
+
 async function finishRecording(recovered) {
   const ra = S.recActive; if (!ra) return;
   const parts = [];
@@ -787,7 +908,7 @@ async function finishRecording(recovered) {
 const A = {
   go(v) { S.ui.screen = v; U.sheet = null; U.confirm = false; save(); render(); },
   reload() { location.reload(); },
-  closeSheet() { if (U.rec) return toast('請先停止錄音 Stop the recording first'); U.sheet = null; U.confirm = false; render(); },
+  closeSheet() { if (U.rec) return toast('請先停止錄音 Stop the recording first'); if (U.sheet === 'clip') return toast('請儲存或刪除片段 Save or discard the clip'); U.sheet = null; U.confirm = false; render(); },
   sheet(v) { U.sheet = v; U.f = Object.assign({}, U.f, { text: '' }); if (v === 'note') U.f.noteKind = U.f.noteKind || 'obs'; render(); },
 
   // setup
@@ -851,7 +972,7 @@ const A = {
   saveNewExpert() {
     const f = U.f; if (!String(f.nxName || '').trim()) return toast('請填姓名 Enter a name');
     const x = { uid: uid(), id: null, cid: f.cid, name: f.nxName.trim(), short: (f.nxShort || f.nxName).trim(), role: f.nxRole || '', years: f.nxYears || '', phone: f.nxPhone || '', consent: false };
-    S.localExperts.push(x); f.expertKey = x.uid; U.sheet = null; U.sig = []; f.scopes = [true, true, true, true, false]; f.paperKey = null; S.ui.screen = 'consent';
+    S.localExperts.push(x); f.expertKey = x.uid; U.sheet = null; U.sig = []; f.scopes = SCOPE_DEFAULT(); f.paperKey = null; S.ui.screen = 'consent';
     save(); scheduleSync(); render(); toast('已加入 ' + x.short);
   },
   openNewTopic() { U.f.newTopic = ''; U.sheet = 'newTopic'; render(); },
@@ -862,13 +983,13 @@ const A = {
     const s = sess(); if (s.topics.indexOf(t) < 0) s.topics.push(t);
     s.metaDirty = true; switchTopic(t); render();
   },
-  goConsent() { U.sig = []; U.f.scopes = [true, true, true, true, false]; U.f.paperKey = null; S.ui.screen = 'consent'; render(); },
-  toggleScope(v) { const a = U.f.scopes || [true, true, true, true, false]; a[+v] = !a[+v]; U.f.scopes = a; render(); },
+  goConsent() { U.sig = []; U.f.scopes = SCOPE_DEFAULT(); U.f.paperKey = null; S.ui.screen = 'consent'; render(); },
+  toggleScope(v) { const a = U.f.scopes || SCOPE_DEFAULT(); a[+v] = !a[+v]; U.f.scopes = a; render(); },
   clearSig() { U.sig = []; render(); },
   paperPhoto() { pick('camIn', 'paper'); },
   async saveConsent() {
     if (!U.sig.length && !U.f.paperKey) return toast('請先簽名 Signature needed');
-    const sc = U.f.scopes || [true, true, true, true, false];
+    const sc = U.f.scopes || SCOPE_DEFAULT();
     if (!sc[0]) return toast('最少要同意第一項 The first item is required');
     let sigKey = null;
     if (U.sig.length) { const cv = document.getElementById('sig'); const b = await new Promise((r) => cv.toBlob(r, 'image/png')); sigKey = 'sig:' + uid(); await putBlob(sigKey, b); }
@@ -957,18 +1078,64 @@ const A = {
     add({ kind: { obs: 'note', gap: 'gap', todo: 'todo' }[k], tag: { obs: 'NT', gap: 'Q', todo: 'TD' }[k], title: { obs: '觀察', gap: '追問 → GAPS', todo: '待辦' }[k], text: txt });
   },
   photo() { pick('camIn', 'photo'); },
-  retakeLib() { pick('picIn', 'photo'); },
+  retakeLib() { pick('picIn', 'photoLib'); },
   fSet(v) { const i = v.indexOf(':'); U.f[v.slice(0, i)] = v.slice(i + 1); render(); },
   savePhoto(v) {
     const f = U.f; if (!f.blobKey) return toast('相片處理中… Wait');
     const d = f.defect === '其他' ? (String(f.defectOther || '').trim() || '其他') : f.defect;
     S.lastDefect = f.defect; S.lastSubstrate = f.substrate || '';
     add({ kind: 'photo', tag: 'PH', title: '相片：' + d, defect: d, defectPick: f.defect, substrate: f.substrate || '', caption: f.caption || '',
-      text: [f.substrate || '（未填承印物）', f.caption].filter(Boolean).join(' · '), blobKey: f.blobKey, blobDone: false, at: f.takenAt }, '相片已儲存 Photo saved');
+      text: [f.substrate || '（未填承印物）', f.caption].filter(Boolean).join(' · '), blobKey: f.blobKey, thumbKey: f.thumbKey, origin: f.origin, fileName: f.fileName, blobDone: false, at: f.takenAt }, '相片已儲存 Photo saved');
     U.urls[f.blobKey] = f.url;
     if (v === 'next') pick('camIn', 'photo');
   },
   pickMemo() { pick('audIn', 'memo'); },
+  async openCamera() {
+    const s = sess();
+    if (!hasScope(s.expertKey, 'video')) return toast('同意書未包括錄影，請先補簽 · Consent does not include video');
+    if (!navigator.mediaDevices || !window.MediaRecorder) return toast('呢部手機唔支援 App 內錄影');
+    if (navigator.storage && navigator.storage.estimate) { const e = await navigator.storage.estimate(); if (e.quota && e.quota - e.usage < 300 * 1048576) return toast('手機空間不足 300 MB，先上載舊片段'); }
+    U.sheet = null; S.ui.screen = 'camera'; U.cam = { err: '' }; render();
+    try {
+      U.cam.stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } } });
+      render();
+    } catch (e) { U.cam.err = '用唔到相機：' + (e.message || e); render(); }
+  },
+  closeCamera() { stopCamStream(); S.ui.screen = 'session'; U.cam = null; render(); },
+  camRecord() {
+    const c = U.cam; if (!c || !c.stream) return;
+    if (c.mr) { c.mr.stop(); return; }
+    const type = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm'].find((t) => MediaRecorder.isTypeSupported(t)) || '';
+    const mr = new MediaRecorder(c.stream, Object.assign({ videoBitsPerSecond: 3500000, audioBitsPerSecond: 64000 }, type ? { mimeType: type } : {}));
+    const id = uid(), st = c.stream.getVideoTracks()[0].getSettings ? c.stream.getVideoTracks()[0].getSettings() : {};
+    const portrait = window.innerHeight > window.innerWidth, w = st.width || 0, hh = st.height || 0;
+    Object.assign(c, { mr, id, start: Date.now(), chain: Promise.resolve(), w: portrait ? Math.min(w, hh) : Math.max(w, hh), h: portrait ? Math.max(w, hh) : Math.min(w, hh) });
+    S.camActive = { id, sessKey: S.ui.active, start: c.start, mime: mr.mimeType || type || 'video/mp4', n: 0, size: 0, w: c.w, h: c.h, topic: sess().current || '' }; save(true);
+    mr.ondataavailable = (e) => {
+      if (!e.data || !e.data.size) return;
+      const ca = S.camActive, n = ca.n++; ca.size += e.data.size;
+      c.chain = c.chain.then(() => putBlob('vp:' + id + ':' + n, e.data)).then(() => save());
+    };
+    mr.onstop = async () => { await c.chain; stopCamStream(); const clip = await assembleClip(false); U.cam = null; if (clip) openClipSheet(clip); else { S.ui.screen = 'session'; render(); } };
+    mr.start(5000); // a piece every 5 s goes to storage
+    setTimeout(() => grabThumb(c, id), 900);
+    c.max = setTimeout(() => { if (c.mr && c.mr.state === 'recording') { c.mr.stop(); toast('已錄滿 3 分鐘'); } }, CLIP_MAX_SEC * 1000);
+    render();
+  },
+  saveClip() {
+    const f = U.f, task = String(f.task || '').trim(); if (!task) return toast('請寫片段名稱 Name the clip');
+    const s = S.sessions[f.sessKey] || sess();
+    const it = { uid: uid(), kind: 'video', tag: '片', title: '片段：' + task, task, text: fmt(f.secs).replace(/^00:/, '') + ' · ' + mb(f.size), blobKey: f.clipKey, thumbKey: f.thumbKey,
+      size: f.size, mime: f.mime, ext: /webm/.test(f.mime) ? 'webm' : 'mp4', duration: f.secs, width: f.w, height: f.h, at: f.start, date: iso(f.start), topic: f.topic || s.current || '' };
+    const secs0 = s.timer && s.timer.firstStartMs ? (f.start - s.timer.firstStartMs) / 1000 : 0; it.rec = secs0 > 0 ? '約 ' + fmt(secs0) : '';
+    s.items.unshift(it); touch(s); U.sheet = null; U.confirm = false; S.ui.screen = 'session'; render(); toast('片段已儲存，會上載 · Clip saved');
+  },
+  async discardClip() {
+    if (!U.confirm) { U.confirm = true; return render(); }
+    U.confirm = false; const f = U.f; await DB.del('blobs', f.clipKey).catch(() => {}); if (f.thumbKey) await DB.del('blobs', f.thumbKey).catch(() => {});
+    U.sheet = null; S.ui.screen = 'session'; render(); toast('已刪除片段');
+  },
+  cleanDone(v) { const c = (S.cleanup || []).find((x) => x.id === v); if (c) { c.done = true; c.doneAt = Date.now(); } save(); render(); },
   async recNote() {
     if (U.rec) { U.rec.mr.stop(); return; }
     if (!window.MediaRecorder || !navigator.mediaDevices) return toast('呢部手機唔支援網頁錄音');
@@ -1000,7 +1167,7 @@ const A = {
   },
   edit(v) {
     const it = sess().items.find((i) => i.uid === v); if (!it) return;
-    U.edit = { uid: v, text: it.text || '', kind: it.kind, topic: it.topic, defect: it.defectPick || (DEFECTS.indexOf(it.defect) >= 0 ? it.defect : (it.defect ? '其他' : '')),
+    U.edit = { uid: v, task: it.task || '', text: it.text || '', kind: it.kind, topic: it.topic, defect: it.defectPick || (DEFECTS.indexOf(it.defect) >= 0 ? it.defect : (it.defect ? '其他' : '')),
       defectOther: DEFECTS.indexOf(it.defect) >= 0 ? '' : it.defect, substrate: it.substrate || '', caption: it.caption || '', fields: Object.assign({}, it.fields || {}), confirm: false };
     U.sheet = 'edit'; render();
   },
@@ -1013,6 +1180,7 @@ const A = {
     } else if (it.kind === 'case') {
       const fl = e.fields; Object.assign(it, { fields: fl, text: [fl.symptom, fl.fix && '→ ' + fl.fix, fl.minutes && fl.minutes + ' 分鐘'].filter(Boolean).join(' ') });
     } else {
+      if (it.kind === 'video') { const t = String(e.task || '').trim() || it.task; it.task = t; it.title = '片段：' + t; }
       if (TEXT_KINDS.indexOf(e.kind) >= 0 && e.kind !== it.kind) { const k = KINDS.find((x) => x[0] === e.kind); it.kind = k[0]; it.tag = k[3]; it.title = k[2]; }
       it.text = e.text;
     }
@@ -1047,14 +1215,14 @@ async function onFile(e) {
   const file = e.target.files && e.target.files[0]; const target = fileTarget; fileTarget = null;
   if (!file) return;
   try {
-    if (target === 'photo') {
+    if (target === 'photo' || target === 'photoLib') {
       const taken = file.lastModified && Math.abs(Date.now() - file.lastModified) < 15 * 60 * 1000 ? file.lastModified : Date.now();
       U.f = Object.assign({}, U.f, { blobKey: null, url: null, takenAt: taken, defect: DEFECTS.indexOf(sess().current) >= 0 ? sess().current : (S.lastDefect || '針孔'),
         defectOther: '', substrate: S.lastSubstrate || '', caption: '' });
       U.sheet = 'photo'; render();
-      const blob = await shrink(file), key = 'ph:' + uid();
-      await putBlob(key, blob);
-      U.f.blobKey = key; U.f.url = URL.createObjectURL(blob); render();
+      const blob = await shrink(file), key = 'ph:' + uid(), thumb = await shrink(blob, 480, 0.72);
+      await putBlob(key, blob); await putBlob('th:' + key, thumb);
+      U.f.blobKey = key; U.f.thumbKey = 'th:' + key; U.f.origin = target === 'photoLib' ? 'library' : 'camera'; U.f.fileName = file.name; U.f.url = URL.createObjectURL(blob); render();
     } else if (target === 'paper') {
       const blob = await shrink(file, 2400, 0.85), key = 'paper:' + uid();
       await putBlob(key, blob); U.f.paperKey = key; render(); toast('已影紙本同意書');
@@ -1064,7 +1232,7 @@ async function onFile(e) {
       const dur = await new Promise((res) => { const a = new Audio(), u = URL.createObjectURL(file); a.preload = 'metadata'; a.onloadedmetadata = () => { res(a.duration); URL.revokeObjectURL(u); }; a.onerror = () => res(0); a.src = u; setTimeout(() => res(0), 4000); });
       const ext = (file.name.match(/\.(\w+)$/) || [, 'm4a'])[1];
       add({ kind: 'audio', sub: 'memo', tag: 'AU', title: '語音備忘錄 ' + file.name.replace(/\.\w+$/, ''), text: (dur && isFinite(dur) ? fmt(dur) + ' · ' : '') + mb(file.size) + ' · 分段上載',
-        blobKey: key, blobDone: false, size: file.size, mime: file.type || 'audio/mp4', ext, fileName: file.name }, '已加入錄音，會分段上載');
+        blobKey: key, blobDone: false, size: file.size, mime: file.type || 'audio/mp4', ext, fileName: file.name, origin: 'voicememo', fileTime: file.lastModified }, '已加入錄音，會分段上載');
     }
   } catch (err) { toast('未能儲存：' + (err.message || err) + '（手機空間夠唔夠？）'); }
 }
@@ -1141,6 +1309,7 @@ async function syncExperts() {
     const sig = c.sigKey && await getBlob(c.sigKey), paper = c.paperKey && await getBlob(c.paperKey);
     await api('saveConsent', { expert_id: x.id, scope: c.scope, signed_at: c.signedAt, signature: sig ? await blobToDataUrl(sig) : '', paper: paper ? await blobToDataUrl(paper) : '' }, 90000);
     c.done = true; c.expertKey = x.id;
+    for (const k of [c.sigKey, c.paperKey]) if (k) await DB.del('blobs', k).catch(() => {});
     const cx = S.cache.experts.find((y) => y.id === x.id); if (cx) cx.consent = true;
     save();
   }
@@ -1156,12 +1325,15 @@ async function syncSession(s) {
   }
   if (s.deleted) return;
   for (const it of s.items) {
-    if (!it.blobKey || it.blobDone || it.deleted) continue;
+    if (!it.blobKey || it.verified || it.deleted) continue;
     if (it.kind === 'photo') {
-      const b = await getBlob(it.blobKey); if (!b) { it.blobDone = true; continue; }
-      await api('uploadPhoto', { session_id: s.sid, uid: it.uid, data: await blobToDataUrl(b), item: { defect: it.defect, substrate: it.substrate, caption: it.caption, topic: it.topic, rec: it.rec, date: it.date } }, 120000);
-      it.blobDone = true; save(); renderSoon();
-    } else if (it.kind === 'audio') await uploadAudio(s, it);
+      const b = await getBlob(it.blobKey); if (!b) { it.verified = it.blobDone = true; continue; }
+      if (!it.sha) { it.sha = await sha256(b); save(); }
+      const r = await api('uploadPhoto', { session_id: s.sid, uid: it.upId || it.uid, sha256: it.sha, data: await blobToDataUrl(b),
+        item: { defect: it.defect, substrate: it.substrate, caption: it.caption, topic: it.topic, rec: it.rec, date: it.date } }, 120000);
+      if (!r.mismatch && r.sha256 === it.sha) await markVerified(it, true);
+      else { it.verifyFail = true; it.upId = it.uid + '-' + uid().slice(-4); save(); } // damaged on the way: keep the photo, send again next round
+    } else if (it.kind === 'audio' || it.kind === 'video') await uploadMedia(s, it);
   }
   const changed = s.changedAt || 0;
   if (changed > (s.syncedAt || 0)) {
@@ -1171,18 +1343,38 @@ async function syncSession(s) {
     s.syncedAt = changed; save(); renderSoon();
   }
 }
-async function uploadAudio(s, it) {
-  const b = await getBlob(it.blobKey); if (!b) { it.blobDone = true; return; }
-  const name = s.sid + ' ' + (it.sub === 'memo' ? '語音備忘錄 ' + (it.fileName || 'recording.m4a') : '語音筆記 ' + stamp(it.at).date + ' ' + stamp(it.at).clock.replace(/:/g, '') + '.' + (it.ext || 'm4a'));
-  let st = await api('audioStart', { session_id: s.sid, uid: it.uid, name, size: b.size, mime: it.mime || b.type || 'audio/mp4', kind: it.sub || 'note' });
+async function uploadMedia(s, it) {
+  const b = await getBlob(it.blobKey); if (!b) { it.verified = it.blobDone = true; return; }
+  if (!it.sha) { it.sha = await sha256(b); save(); }
+  const upId = it.upId || it.uid;
+  if (it.fileId && !it.verifyFail) { // uploaded earlier; Drive's fingerprint was not ready
+    const v = await api('verifyFile', { file: it.fileId });
+    if (v.sha256) return finishMediaCheck(it, v.sha256);
+    return;
+  }
+  const d = stamp(it.at);
+  const name = s.sid + ' ' + (it.kind === 'video' ? '片段 ' + (it.task || '') + ' ' + d.date + ' ' + d.clock.replace(/:/g, '') + '.' + (it.ext || 'mp4')
+    : it.sub === 'memo' ? '語音備忘錄 ' + (it.fileName || 'recording.m4a') : '語音筆記 ' + d.date + ' ' + d.clock.replace(/:/g, '') + '.' + (it.ext || 'm4a'));
+  const kind = it.kind === 'video' ? 'video' : (it.sub || 'note');
+  const meta = it.kind === 'video' ? { task: it.task, topic: it.topic, duration: it.duration, width: it.width, height: it.height, captured_at: it.date } : undefined;
+  const start = () => api('audioStart', { session_id: s.sid, uid: upId, name, size: b.size, mime: it.mime || b.type || 'audio/mp4', kind, meta });
+  let st = await start();
   const CH = S.cache.chunk || 5 * 1024 * 1024;
-  for (let guard = 0; guard < 2000; guard++) {
-    if (st.done) { it.blobDone = true; it.progress = 1; it.freed = true; await DB.del('blobs', it.blobKey).catch(() => {}); save(); renderSoon(); return; }
-    if (st.offset < 0) { st = await api('audioStart', { session_id: s.sid, uid: it.uid, name, size: b.size, mime: it.mime || b.type, kind: it.sub || 'note' }); continue; }
+  for (let guard = 0; guard < 4000; guard++) {
+    if (st.done) {
+      it.fileId = st.file; it.progress = 1; save();
+      if (st.sha256) return finishMediaCheck(it, st.sha256);
+      return renderSoon(); // fingerprint not ready yet; checked again on the next sync
+    }
+    if (st.offset < 0) { st = await start(); continue; }
     it.progress = st.offset / b.size; renderSoon();
     const data = await blobToB64(b.slice(st.offset, st.offset + CH));
-    st = await api('audioChunk', { uid: it.uid, offset: st.offset, data }, 180000);
+    st = await api('audioChunk', { uid: upId, offset: st.offset, data }, 180000);
   }
+}
+async function finishMediaCheck(it, driveSha) {
+  if (driveSha === it.sha) return markVerified(it, false);
+  it.verifyFail = true; it.fileId = null; it.progress = 0; it.upId = it.uid + '-' + uid().slice(-4); save(); renderSoon(); // send again as a new file
 }
 window.addEventListener('online', () => { setNet('idle'); sync(); });
 window.addEventListener('offline', () => setNet('offline'));
@@ -1201,9 +1393,10 @@ setInterval(() => sync(), 60 * 1000);
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   const code = (location.hash.match(/#c=([A-Za-z0-9_-]+)/) || [])[1];
   if (code && S.config && !S.config.demo && isStandalone()) history.replaceState(null, '', location.pathname);
-  if (S.ui.screen === 'quiet' || S.ui.screen === 'show') S.ui.screen = 'session';
+  if (S.ui.screen === 'quiet' || S.ui.screen === 'show' || S.ui.screen === 'camera') S.ui.screen = 'session';
   if (!S.config && code && isStandalone()) { U.f.code = code; }
   if (S.recActive) await finishRecording(true);
+  if (S.camActive) { const clip = await assembleClip(true); if (clip) { await openClipSheet(clip); toast('救回上次未完成的片段'); } }
   render();
   sync();
   if ('serviceWorker' in navigator) {

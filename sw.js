@@ -1,6 +1,6 @@
 /* Field Kit service worker: keeps the app itself on the phone so it opens with no signal.
  * Data never passes through here — the app talks to Apps Script directly. Bump V to ship an update. */
-const V = 'fieldkit-1.1.1';
+const V = 'fieldkit-1.2.0';
 const FILES = ['./', './index.html', './app.js', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png', './check.html'];
 self.addEventListener('install', (e) => { self.skipWaiting(); e.waitUntil(caches.open(V).then((c) => c.addAll(FILES))); });
 self.addEventListener('activate', (e) => {
